@@ -12,8 +12,11 @@ class ServiceNowConfig(BaseModel):
     """ServiceNow connection configuration."""
 
     instance: str = Field(..., description="ServiceNow instance URL or subdomain")
-    username: str = Field(..., description="ServiceNow username")
-    password: str = Field(..., description="ServiceNow password")
+    username: str = Field(default="", description="ServiceNow username (for basic auth)")
+    password: str = Field(default="", description="ServiceNow password (for basic auth)")
+    oauth_client_id: Optional[str] = Field(default=None, description="OAuth2 client_credentials client_id")
+    oauth_client_secret: Optional[str] = Field(default=None, description="OAuth2 client_credentials client_secret")
+    oauth_token_url: Optional[str] = Field(default=None, description="OAuth2 token endpoint (default: {instance}/oauth_token.do)")
     api_version: str = Field(default="v2", description="ServiceNow API version")
     timeout: int = Field(default=30, description="Request timeout in seconds")
     max_retries: int = Field(default=3, description="Maximum number of retry attempts")
@@ -138,6 +141,9 @@ class ConfigManager:
             "SERVICENOW_INSTANCE": ["servicenow", "instance"],
             "SERVICENOW_USERNAME": ["servicenow", "username"],
             "SERVICENOW_PASSWORD": ["servicenow", "password"],
+            "SERVICENOW_OAUTH_CLIENT_ID": ["servicenow", "oauth_client_id"],
+            "SERVICENOW_OAUTH_CLIENT_SECRET": ["servicenow", "oauth_client_secret"],
+            "SERVICENOW_OAUTH_TOKEN_URL": ["servicenow", "oauth_token_url"],
             "SERVICENOW_API_VERSION": ["servicenow", "api_version"],
             "SERVICENOW_TIMEOUT": ["servicenow", "timeout"],
             "MCP_LOG_LEVEL": ["logging", "level"],

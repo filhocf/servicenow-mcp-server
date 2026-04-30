@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from typing import Any, Optional
 
 import httpx
@@ -24,6 +25,8 @@ class ServiceNowClient:
         self.config = config
         self.base_url = f"{config.instance}/api/now"
         self._client: Optional[httpx.AsyncClient] = None
+        self._oauth_token: Optional[str] = None
+        self._oauth_expires_at: float = 0
 
     async def __aenter__(self) -> "ServiceNowClient":
         """Async context manager entry."""
@@ -34,17 +37,54 @@ class ServiceNowClient:
         """Async context manager exit."""
         await self.close()
 
-    async def connect(self) -> None:
-        """Initialize HTTP client."""
-        if self._client is None:
-            self._client = httpx.AsyncClient(
-                auth=(self.config.username, self.config.password),
-                timeout=self.config.timeout,
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
+    @property
+    def _uses_oauth(self) -> bool:
+        """Check if OAuth2 client_credentials is configured."""
+        return bool(self.config.oauth_client_id and self.config.oauth_client_secret)
+
+    async def _get_oauth_token(self) -> str:
+        """Obtain or refresh OAuth2 access token via client_credentials grant."""
+        if self._oauth_token and time.time() < self._oauth_expires_at - 60:
+            return self._oauth_token
+
+        token_url = self.config.oauth_token_url or f"{self.config.instance}/oauth_token.do"
+        async with httpx.AsyncClient(verify=False, timeout=15) as client:
+            resp = await client.post(
+                token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self.config.oauth_client_id,
+                    "client_secret": self.config.oauth_client_secret,
                 },
             )
+            resp.raise_for_status()
+            data = resp.json()
+
+        self._oauth_token = data["access_token"]
+        self._oauth_expires_at = time.time() + data.get("expires_in", 1800)
+        return self._oauth_token
+
+    async def connect(self) -> None:
+        """Initialize HTTP client with appropriate auth method."""
+        if self._client is None:
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
+
+            if self._uses_oauth:
+                token = await self._get_oauth_token()
+                headers["Authorization"] = f"Bearer {token}"
+                self._client = httpx.AsyncClient(
+                    timeout=self.config.timeout,
+                    headers=headers,
+                )
+            else:
+                self._client = httpx.AsyncClient(
+                    auth=(self.config.username, self.config.password),
+                    timeout=self.config.timeout,
+                    headers=headers,
+                )
 
     async def close(self) -> None:
         """Close HTTP client."""
@@ -63,6 +103,12 @@ class ServiceNowClient:
         """Make an HTTP request to ServiceNow API."""
         if self._client is None:
             await self.connect()
+
+        # Refresh OAuth2 token if needed
+        if self._uses_oauth and time.time() >= self._oauth_expires_at - 60:
+            token = await self._get_oauth_token()
+            assert self._client is not None
+            self._client.headers["Authorization"] = f"Bearer {token}"
 
         url = f"{self.base_url}/{endpoint}"
 
