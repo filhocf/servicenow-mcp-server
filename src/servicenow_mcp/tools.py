@@ -797,7 +797,7 @@ class ToolRegistry:
 
         if "state" in args:
             states = args["state"]
-            if isinstance(states, list):
+            if isinstance(states, list) and states:
                 state_query = "^OR".join([f"state={s}" for s in states])
                 query_parts.append(f"({state_query})")
             else:
@@ -815,7 +815,7 @@ class ToolRegistry:
             query_parts.append(f"sys_created_on>{args['created_after']}")
 
         if "text_search" in args:
-            text = args["text_search"]
+            text = args["text_search"].replace("^", "")
             query_parts.append(f"short_descriptionLIKE{text}^ORdescriptionLIKE{text}")
 
         query = "^".join(query_parts) if query_parts else None
@@ -864,7 +864,7 @@ class ToolRegistry:
 
         if "state" in args:
             states = args["state"]
-            if isinstance(states, list):
+            if isinstance(states, list) and states:
                 state_query = "^OR".join([f"state={s}" for s in states])
                 query_parts.append(f"({state_query})")
             else:
@@ -877,7 +877,7 @@ class ToolRegistry:
             query_parts.append(f"sys_created_on>{args['created_after']}")
 
         if "text_search" in args:
-            text = args["text_search"]
+            text = args["text_search"].replace("^", "")
             query_parts.append(f"short_descriptionLIKE{text}^ORdescriptionLIKE{text}")
 
         query = "^".join(query_parts) if query_parts else None
@@ -912,7 +912,7 @@ class ToolRegistry:
 
         data: dict[str, Any] = {}
         for field in ("state", "work_notes", "close_code", "close_notes"):
-            if field in args:
+            if field in args and args[field] is not None:
                 data[field] = args[field]
 
         # Merge custom fields
@@ -934,7 +934,7 @@ class ToolRegistry:
 
         if "state" in args:
             states = args["state"]
-            if isinstance(states, list):
+            if isinstance(states, list) and states:
                 state_query = "^OR".join([f"state={s}" for s in states])
                 query_parts.append(f"({state_query})")
 
