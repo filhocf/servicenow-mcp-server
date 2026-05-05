@@ -384,6 +384,116 @@ class ToolRegistry:
             self._handle_change_create,
         )
 
+        # Change search
+        self._register_tool(
+            "change_search",
+            Tool(
+                name="change_search",
+                description="Search for change requests",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "state": {
+                            "description": "Filter by states",
+                            "type": "array",
+                            "items": {"type": "integer"},
+                        },
+                        "type": {
+                            "type": "string",
+                            "description": "Change type (normal, standard, emergency)",
+                        },
+                        "assignment_group": {
+                            "type": "string",
+                            "description": "Filter by assignment group",
+                        },
+                        "assigned_to": {
+                            "type": "string",
+                            "description": "Filter by assigned user",
+                        },
+                        "created_after": {
+                            "type": "string",
+                            "description": "Created after date (YYYY-MM-DD)",
+                        },
+                        "text_search": {
+                            "type": "string",
+                            "description": "Search in short description and description",
+                        },
+                        "number": {
+                            "type": "string",
+                            "description": "Filter by CHG number (e.g., CHG0121132)",
+                        },
+                        "limit": {"type": "integer", "default": 50},
+                    },
+                },
+            ),
+            self._handle_change_search,
+        )
+
+        # Change update
+        self._register_tool(
+            "change_update",
+            Tool(
+                name="change_update",
+                description="Update an existing change request",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "number": {
+                            "type": "string",
+                            "description": "Change number (e.g., CHG0121132)",
+                        },
+                        "state": {
+                            "type": "integer",
+                            "description": "State (-5=New, -4=Assess, -3=Authorize, -2=Scheduled, -1=Implement, 0=Review, 3=Closed, 4=Cancelled)",
+                        },
+                        "work_notes": {
+                            "type": "string",
+                            "description": "Work notes (internal)",
+                        },
+                        "close_code": {
+                            "type": "string",
+                            "description": "Close code when closing",
+                        },
+                        "close_notes": {
+                            "type": "string",
+                            "description": "Close notes",
+                        },
+                        "custom_fields": {
+                            "type": "object",
+                            "description": "Custom fields (u_* fields specific to your instance)",
+                        },
+                    },
+                    "required": ["number"],
+                },
+            ),
+            self._handle_change_update,
+        )
+
+        # Change tasks
+        self._register_tool(
+            "change_tasks",
+            Tool(
+                name="change_tasks",
+                description="List tasks of a change request",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "change_number": {
+                            "type": "string",
+                            "description": "Change number (e.g., CHG0121132)",
+                        },
+                        "state": {
+                            "description": "Filter by task state",
+                            "type": "array",
+                            "items": {"type": "integer"},
+                        },
+                    },
+                    "required": ["change_number"],
+                },
+            ),
+            self._handle_change_tasks,
+        )
+
         # CMDB
         self._register_tool(
             "ci_search",
@@ -736,6 +846,107 @@ class ToolRegistry:
         data = {k: v for k, v in data.items() if v is not None}
 
         return await client.create_record("change_request", data, display_value="both")
+
+    async def _handle_change_search(
+        self, client: ServiceNowClient, args: dict[str, Any]
+    ) -> Any:
+        """Handle change request search."""
+        query_parts = []
+
+        if "number" in args:
+            query_parts.append(f"number={args['number']}")
+
+        if "assigned_to" in args:
+            query_parts.append(f"assigned_to.user_name={args['assigned_to']}")
+
+        if "assignment_group" in args:
+            query_parts.append(f"assignment_group.name={args['assignment_group']}")
+
+        if "state" in args:
+            states = args["state"]
+            if isinstance(states, list):
+                state_query = "^OR".join([f"state={s}" for s in states])
+                query_parts.append(f"({state_query})")
+            else:
+                query_parts.append(f"state={states}")
+
+        if "type" in args:
+            query_parts.append(f"type={args['type']}")
+
+        if "created_after" in args:
+            query_parts.append(f"sys_created_on>{args['created_after']}")
+
+        if "text_search" in args:
+            text = args["text_search"]
+            query_parts.append(f"short_descriptionLIKE{text}^ORdescriptionLIKE{text}")
+
+        query = "^".join(query_parts) if query_parts else None
+
+        return await client.query_records(
+            table="change_request",
+            query=query,
+            limit=args.get("limit", 50),
+            order_by="-sys_created_on",
+            display_value="both",
+        )
+
+    async def _handle_change_update(
+        self, client: ServiceNowClient, args: dict[str, Any]
+    ) -> Any:
+        """Handle change request update."""
+        number = args["number"]
+
+        # Find the CHG by number
+        results = await client.query_records(
+            table="change_request",
+            query=f"number={number}",
+            fields=["sys_id"],
+            limit=1,
+        )
+
+        records = results.get("result", [])
+        if not records:
+            return {"error": f"Change request {number} not found"}
+
+        sys_id = records[0]["sys_id"]
+
+        data: dict[str, Any] = {}
+        for field in ("state", "work_notes", "close_code", "close_notes"):
+            if field in args:
+                data[field] = args[field]
+
+        # Merge custom fields
+        if "custom_fields" in args:
+            data.update(args["custom_fields"])
+
+        if not data:
+            return {"error": "No fields to update"}
+
+        return await client.update_record("change_request", sys_id, data, display_value="both")
+
+    async def _handle_change_tasks(
+        self, client: ServiceNowClient, args: dict[str, Any]
+    ) -> Any:
+        """Handle listing tasks of a change request."""
+        change_number = args["change_number"]
+
+        query_parts = [f"change_request.number={change_number}"]
+
+        if "state" in args:
+            states = args["state"]
+            if isinstance(states, list):
+                state_query = "^OR".join([f"state={s}" for s in states])
+                query_parts.append(f"({state_query})")
+
+        query = "^".join(query_parts)
+
+        return await client.query_records(
+            table="change_task",
+            query=query,
+            limit=100,
+            order_by="order",
+            display_value="both",
+        )
 
     async def _handle_ci_search(
         self, client: ServiceNowClient, args: dict[str, Any]
