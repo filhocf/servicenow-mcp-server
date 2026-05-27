@@ -43,6 +43,7 @@ class ToolRegistry:
             "change": self.features.change_management,
             "problem": self.features.problem_management,
             "catalog": self.features.service_catalog,
+            "ritm": self.features.service_catalog,
             "kb": self.features.knowledge_base,
             "user": self.features.user_management,
             "cmdb": self.features.cmdb,
@@ -377,6 +378,10 @@ class ToolRegistry:
                             "type": "string",
                             "description": "Planned end date (YYYY-MM-DD HH:MM:SS)",
                         },
+                        "custom_fields": {
+                            "type": "object",
+                            "description": "Additional fields to include in the change request",
+                        },
                     },
                     "required": ["short_description", "type"],
                 },
@@ -626,6 +631,69 @@ class ToolRegistry:
             self._handle_catalog_items,
         )
 
+        # RITM (Requested Item) operations
+        self._register_tool(
+            "ritm_search",
+            Tool(
+                name="ritm_search",
+                description="Search for requested items (RITMs)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "state": {
+                            "type": "string",
+                            "description": "Filter by state",
+                        },
+                        "cat_item": {
+                            "type": "string",
+                            "description": "Filter by catalog item sys_id",
+                        },
+                        "requested_for": {
+                            "type": "string",
+                            "description": "Filter by requested_for username",
+                        },
+                        "opened_at": {
+                            "type": "string",
+                            "description": "Filter opened after date (YYYY-MM-DD)",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results",
+                            "default": 50,
+                        },
+                    },
+                },
+            ),
+            self._handle_ritm_search,
+        )
+
+        self._register_tool(
+            "ritm_create",
+            Tool(
+                name="ritm_create",
+                description="Order a service catalog item (creates RITM)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "cat_item": {
+                            "type": "string",
+                            "description": "Catalog item sys_id",
+                        },
+                        "variables": {
+                            "type": "object",
+                            "description": "Variables for the catalog item",
+                        },
+                        "requested_for": {
+                            "type": "string",
+                            "description": "User sys_id to request for",
+                        },
+                    },
+                    "required": ["cat_item"],
+                },
+            ),
+            self._handle_ritm_create,
+        )
+
         # Aggregate operations
         self._register_tool(
             "get_stats",
@@ -840,6 +908,10 @@ class ToolRegistry:
 
         # Remove None values
         data = {k: v for k, v in data.items() if v is not None}
+
+        # Merge custom fields
+        if args.get("custom_fields"):
+            data.update(args["custom_fields"])
 
         return await client.create_record("change_request", data, display_value="both")
 
@@ -1085,4 +1157,42 @@ class ToolRegistry:
             aggregate=args.get(
                 "aggregates", [{"type": "COUNT", "field": "sys_id", "alias": "count"}]
             ),
+        )
+
+    async def _handle_ritm_search(
+        self, client: ServiceNowClient, args: dict[str, Any]
+    ) -> Any:
+        """Handle RITM search."""
+        query_parts = []
+
+        if "state" in args:
+            query_parts.append(f"state={args['state']}")
+
+        if "cat_item" in args:
+            query_parts.append(f"cat_item={args['cat_item']}")
+
+        if "requested_for" in args:
+            query_parts.append(f"requested_for.user_name={args['requested_for']}")
+
+        if "opened_at" in args:
+            query_parts.append(f"opened_at>{args['opened_at']}")
+
+        query = "^".join(query_parts) if query_parts else None
+
+        return await client.query_records(
+            "sc_req_item",
+            query=query,
+            limit=args.get("limit", 50),
+            order_by="-opened_at",
+            display_value="both",
+        )
+
+    async def _handle_ritm_create(
+        self, client: ServiceNowClient, args: dict[str, Any]
+    ) -> Any:
+        """Handle RITM creation via service catalog order."""
+        return await client.order_catalog_item(
+            cat_item=args["cat_item"],
+            variables=args.get("variables"),
+            requested_for=args.get("requested_for"),
         )

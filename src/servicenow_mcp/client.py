@@ -80,8 +80,10 @@ class ServiceNowClient:
             return self._handle_response(response)
 
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429 and retry_count < self.config.max_retries:
-                # Handle rate limiting with exponential backoff
+            is_idempotent = method.upper() in ("GET", "HEAD", "OPTIONS")
+            is_retryable = e.response.status_code == 429 or (e.response.status_code >= 500 and is_idempotent)
+            if is_retryable and retry_count < self.config.max_retries:
+                # Exponential backoff for rate limits and server errors (GET only)
                 wait_time = 2**retry_count
                 await asyncio.sleep(wait_time)
                 return await self._request(
@@ -353,3 +355,19 @@ class ServiceNowClient:
     async def query_cis(self, **kwargs: Any) -> list[dict[str, Any]]:
         """Query configuration items."""
         return await self.query_records("cmdb_ci", **kwargs)
+
+    async def order_catalog_item(
+        self,
+        cat_item: str,
+        variables: Optional[dict[str, Any]] = None,
+        requested_for: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Order a service catalog item (creates RITM)."""
+        endpoint = f"sn_sc/servicecatalog/items/{cat_item}/order_now"
+        data: dict[str, Any] = {}
+        if variables:
+            data["variables"] = variables
+        if requested_for:
+            data["sysparm_requested_for"] = requested_for
+        result = await self._request("POST", endpoint, data=data)
+        return result.get("result", {})  # type: ignore[no-any-return]

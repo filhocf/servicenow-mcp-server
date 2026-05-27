@@ -315,3 +315,91 @@ class TestToolRegistry:
             group_by=["priority"],
             aggregate=[{"type": "COUNT", "field": "sys_id", "alias": "count"}],
         )
+
+
+    @pytest.mark.asyncio
+    async def test_change_create_custom_fields(self):
+        """Test change_create with custom_fields."""
+        features = FeaturesConfig()
+        registry = ToolRegistry(features)
+
+        mock_client = AsyncMock()
+        mock_client.create_record.return_value = {
+            "sys_id": "chg123",
+            "number": "CHG0000001",
+        }
+
+        handler = registry.get_handler("change_create")
+        result = await handler(
+            mock_client,
+            {
+                "short_description": "Deploy v2",
+                "type": "normal",
+                "custom_fields": {"u_environment": "production", "u_team": "platform"},
+            },
+        )
+
+        assert result["number"] == "CHG0000001"
+        call_args = mock_client.create_record.call_args
+        data = call_args[0][1]
+        assert data["u_environment"] == "production"
+        assert data["u_team"] == "platform"
+
+    @pytest.mark.asyncio
+    async def test_ritm_search_handler(self):
+        """Test ritm_search handler."""
+        features = FeaturesConfig()
+        registry = ToolRegistry(features)
+
+        mock_client = AsyncMock()
+        mock_client.query_records.return_value = [
+            {"sys_id": "ritm1", "number": "RITM0000001"}
+        ]
+
+        handler = registry.get_handler("ritm_search")
+        result = await handler(
+            mock_client,
+            {"state": "1", "requested_for": "john.doe", "limit": 10},
+        )
+
+        assert len(result) == 1
+        mock_client.query_records.assert_called_once()
+        call_args = mock_client.query_records.call_args
+        assert call_args[0][0] == "sc_req_item"
+        assert "state=1" in call_args[1]["query"]
+        assert "requested_for.user_name=john.doe" in call_args[1]["query"]
+
+    @pytest.mark.asyncio
+    async def test_ritm_create_handler(self):
+        """Test ritm_create handler."""
+        features = FeaturesConfig()
+        registry = ToolRegistry(features)
+
+        mock_client = AsyncMock()
+        mock_client.order_catalog_item.return_value = {
+            "sys_id": "ritm2", "number": "RITM0000002"
+        }
+
+        handler = registry.get_handler("ritm_create")
+        result = await handler(
+            mock_client,
+            {
+                "cat_item": "cat_sys_id_123",
+                "variables": {"urgency": "high"},
+                "requested_for": "user_sys_id",
+            },
+        )
+
+        mock_client.order_catalog_item.assert_called_once_with(
+            cat_item="cat_sys_id_123",
+            variables={"urgency": "high"},
+            requested_for="user_sys_id",
+        )
+
+    def test_ritm_tools_registered(self):
+        """Test that RITM tools are registered."""
+        features = FeaturesConfig()
+        registry = ToolRegistry(features)
+        tool_names = [t.name for t in registry.get_enabled_tools()]
+        assert "ritm_search" in tool_names
+        assert "ritm_create" in tool_names
