@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "servicenow-mcp-server"
-version = "0.2.0"
+version = "0.3.1"
 description = "A highly customizable MCP server for ServiceNow API integration"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
     { name = "asklokesh", email = "lokeshmure@live.com" }
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.1.0",
     "httpx>=0.25.0",

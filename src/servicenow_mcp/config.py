@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -12,9 +12,21 @@ class ServiceNowConfig(BaseModel):
     """ServiceNow connection configuration."""
 
     instance: str = Field(..., description="ServiceNow instance URL or subdomain")
-    username: str = Field(default="", description="ServiceNow username")
-    password: str = Field(default="", description="ServiceNow password")
-    session_cookies: Optional[dict[str, str]] = Field(default=None, description="Session cookies from SSO login")
+    username: str = Field(default="", description="ServiceNow username (basic auth)")
+    password: str = Field(default="", description="ServiceNow password (basic auth)")
+    oauth_client_id: str | None = Field(
+        default=None, description="OAuth2 client_credentials client_id"
+    )
+    oauth_client_secret: str | None = Field(
+        default=None, description="OAuth2 client_credentials client_secret"
+    )
+    oauth_token_url: str | None = Field(
+        default=None,
+        description="OAuth2 token endpoint (default: {instance}/oauth_token.do)",
+    )
+    session_cookies: dict[str, str] | None = Field(
+        default=None, description="Session cookies from SSO login"
+    )
     api_version: str = Field(default="v2", description="ServiceNow API version")
     timeout: int = Field(default=30, description="Request timeout in seconds")
     max_retries: int = Field(default=3, description="Maximum number of retry attempts")
@@ -62,7 +74,7 @@ class LoggingConfig(BaseModel):
 
     level: str = Field(default="INFO", description="Logging level")
     format: str = Field(default="json", description="Log format (json or text)")
-    file: Optional[str] = Field(default=None, description="Log file path")
+    file: str | None = Field(default=None, description="Log file path")
 
 
 class Config(BaseModel):
@@ -77,10 +89,10 @@ class Config(BaseModel):
 class ConfigManager:
     """Manages configuration loading and merging."""
 
-    def __init__(self, config_dir: Optional[Path] = None):
+    def __init__(self, config_dir: Path | None = None):
         """Initialize configuration manager."""
         self.config_dir = config_dir or Path("config")
-        self._config: Optional[Config] = None
+        self._config: Config | None = None
 
     def load(self) -> Config:
         """Load configuration from files and environment variables."""
@@ -139,6 +151,9 @@ class ConfigManager:
             "SERVICENOW_INSTANCE": ["servicenow", "instance"],
             "SERVICENOW_USERNAME": ["servicenow", "username"],
             "SERVICENOW_PASSWORD": ["servicenow", "password"],
+            "SERVICENOW_OAUTH_CLIENT_ID": ["servicenow", "oauth_client_id"],
+            "SERVICENOW_OAUTH_CLIENT_SECRET": ["servicenow", "oauth_client_secret"],
+            "SERVICENOW_OAUTH_TOKEN_URL": ["servicenow", "oauth_token_url"],
             "SERVICENOW_SESSION_COOKIES": ["servicenow", "session_cookies"],
             "SERVICENOW_API_VERSION": ["servicenow", "api_version"],
             "SERVICENOW_TIMEOUT": ["servicenow", "timeout"],

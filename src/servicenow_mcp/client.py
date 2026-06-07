@@ -2,7 +2,8 @@
 
 import asyncio
 import json
-from typing import Any, Optional
+import time
+from typing import Any
 
 import httpx
 from httpx import Response
@@ -23,7 +24,9 @@ class ServiceNowClient:
         """Initialize ServiceNow client."""
         self.config = config
         self.base_url = f"{config.instance}/api/now"
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
+        self._oauth_token: str | None = None
+        self._oauth_expires_at: float = 0
 
     async def __aenter__(self) -> "ServiceNowClient":
         """Async context manager entry."""
@@ -34,19 +37,67 @@ class ServiceNowClient:
         """Async context manager exit."""
         await self.close()
 
-    async def connect(self) -> None:
-        """Initialize HTTP client."""
-        if self._client is None:
-            cookies = self.config.session_cookies
-            self._client = httpx.AsyncClient(
-                auth=None if cookies else (self.config.username, self.config.password),
-                cookies=httpx.Cookies(cookies) if cookies else None,
-                timeout=self.config.timeout,
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
+    @property
+    def _uses_oauth(self) -> bool:
+        """Check if OAuth2 client_credentials is configured."""
+        return bool(self.config.oauth_client_id and self.config.oauth_client_secret)
+
+    async def _get_oauth_token(self) -> str:
+        """Obtain or refresh OAuth2 access token via client_credentials grant."""
+        if self._oauth_token and time.time() < self._oauth_expires_at - 60:
+            return self._oauth_token
+
+        token_url = (
+            self.config.oauth_token_url or f"{self.config.instance}/oauth_token.do"
+        )
+        async with httpx.AsyncClient(verify=False, timeout=15) as client:
+            resp = await client.post(
+                token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self.config.oauth_client_id,
+                    "client_secret": self.config.oauth_client_secret,
                 },
             )
+            if resp.status_code != 200:
+                raise ServiceNowAuthenticationError(
+                    f"OAuth2 token request failed: {resp.status_code} {resp.text}"
+                )
+            data = resp.json()
+
+        self._oauth_token = data["access_token"]
+        self._oauth_expires_at = time.time() + data.get("expires_in", 1800)
+        return self._oauth_token
+
+    async def connect(self) -> None:
+        """Initialize HTTP client with appropriate auth method."""
+        if self._client is None:
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
+            cookies = self.config.session_cookies
+
+            if self._uses_oauth:
+                token = await self._get_oauth_token()
+                headers["Authorization"] = f"Bearer {token}"
+                self._client = httpx.AsyncClient(
+                    verify=False,
+                    timeout=self.config.timeout,
+                    headers=headers,
+                )
+            elif cookies:
+                self._client = httpx.AsyncClient(
+                    cookies=httpx.Cookies(cookies),
+                    timeout=self.config.timeout,
+                    headers=headers,
+                )
+            else:
+                self._client = httpx.AsyncClient(
+                    auth=(self.config.username, self.config.password),
+                    timeout=self.config.timeout,
+                    headers=headers,
+                )
 
     async def close(self) -> None:
         """Close HTTP client."""
@@ -58,13 +109,19 @@ class ServiceNowClient:
         self,
         method: str,
         endpoint: str,
-        params: Optional[dict[str, Any]] = None,
-        data: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
         retry_count: int = 0,
     ) -> dict[str, Any]:
         """Make an HTTP request to ServiceNow API."""
         if self._client is None:
             await self.connect()
+
+        # Refresh OAuth2 token if near expiry
+        if self._uses_oauth and time.time() >= self._oauth_expires_at - 60:
+            token = await self._get_oauth_token()
+            assert self._client is not None
+            self._client.headers["Authorization"] = f"Bearer {token}"
 
         url = f"{self.base_url}/{endpoint}"
 
@@ -79,11 +136,24 @@ class ServiceNowClient:
 
             return self._handle_response(response)
 
+        except ServiceNowAuthenticationError:
+            # On 401 with OAuth, try refreshing token once
+            if self._uses_oauth and retry_count == 0:
+                self._oauth_token = None  # Force refresh
+                token = await self._get_oauth_token()
+                assert self._client is not None
+                self._client.headers["Authorization"] = f"Bearer {token}"
+                return await self._request(
+                    method, endpoint, params, data, retry_count + 1
+                )
+            raise
+
         except httpx.HTTPStatusError as e:
             is_idempotent = method.upper() in ("GET", "HEAD", "OPTIONS")
-            is_retryable = e.response.status_code == 429 or (e.response.status_code >= 500 and is_idempotent)
+            is_retryable = e.response.status_code == 429 or (
+                e.response.status_code >= 500 and is_idempotent
+            )
             if is_retryable and retry_count < self.config.max_retries:
-                # Exponential backoff for rate limits and server errors (GET only)
                 wait_time = 2**retry_count
                 await asyncio.sleep(wait_time)
                 return await self._request(
@@ -135,7 +205,7 @@ class ServiceNowClient:
         self,
         table: str,
         sys_id: str,
-        fields: Optional[list[str]] = None,
+        fields: list[str] | None = None,
         display_value: str = "false",
     ) -> dict[str, Any]:
         """Get a single record from a table."""
@@ -151,11 +221,11 @@ class ServiceNowClient:
     async def query_records(
         self,
         table: str,
-        query: Optional[str] = None,
-        fields: Optional[list[str]] = None,
+        query: str | None = None,
+        fields: list[str] | None = None,
         limit: int = 100,
         offset: int = 0,
-        order_by: Optional[str] = None,
+        order_by: str | None = None,
         display_value: str = "false",
     ) -> list[dict[str, Any]]:
         """Query records from a table."""
@@ -217,10 +287,10 @@ class ServiceNowClient:
     async def get_aggregate(
         self,
         table: str,
-        query: Optional[str] = None,
-        group_by: Optional[list[str]] = None,
-        having: Optional[str] = None,
-        aggregate: Optional[list[dict[str, str]]] = None,
+        query: str | None = None,
+        group_by: list[str] | None = None,
+        having: str | None = None,
+        aggregate: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Get aggregate data from a table."""
         endpoint = f"stats/{table}"
@@ -359,8 +429,8 @@ class ServiceNowClient:
     async def order_catalog_item(
         self,
         cat_item: str,
-        variables: Optional[dict[str, Any]] = None,
-        requested_for: Optional[str] = None,
+        variables: dict[str, Any] | None = None,
+        requested_for: str | None = None,
     ) -> dict[str, Any]:
         """Order a service catalog item (creates RITM)."""
         endpoint = f"sn_sc/servicecatalog/items/{cat_item}/order_now"
